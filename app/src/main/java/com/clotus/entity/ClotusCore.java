@@ -1,44 +1,257 @@
 package com.clotus.entity;
 
-import android.content.*;
-import android.os.*;
-import org.json.*;
-import java.io.*;
+import android.content.Context;
+import org.json.JSONArray;
+import org.json.JSONObject;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.text.*;
-import java.util.*;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
+import java.util.UUID;
 
-/** Core boundary: persistence, memory, integrity, snapshots and audit are not UI concerns. */
 public final class ClotusCore {
     public static final String VERSION = "1.0.0";
-    private final File root, stateFile, memoryFile, snapshotsDir, auditFile;
-    private JSONObject identity, state;
-    private JSONArray memories, audit;
+
+    private final File rootDir;
+    private final File identityFile;
+    private final File memoryFile;
+    private final File snapshotDir;
+    private final File auditFile;
+    private final File runtimeFile;
+
+    private JSONObject identity;
+    private JSONObject runtimeState;
+    private JSONArray memory;
+    private JSONArray audit;
+
     public ClotusCore(Context context) throws Exception {
-        root = new File(context.getFilesDir(), "clotus"); if (!root.exists() && !root.mkdirs()) throw new IOException("Cannot create storage");
-        stateFile = new File(root, "state.json"); memoryFile = new File(root, "memory.json"); snapshotsDir = new File(root, "snapshots"); auditFile = new File(root, "audit.json");
-        load();
+        rootDir = new File(context.getFilesDir(), "clotus");
+        if (!rootDir.exists() && !rootDir.mkdirs()) {
+            throw new IllegalStateException("Unable to create CLOTUS base directory");
+        }
+
+        identityFile = new File(rootDir, "identity.json");
+        memoryFile = new File(rootDir, "memory.json");
+        snapshotDir = new File(rootDir, "snapshots");
+        auditFile = new File(rootDir, "audit.json");
+        runtimeFile = new File(rootDir, "runtime.json");
+
+        if (!snapshotDir.exists() && !snapshotDir.mkdirs()) {
+            throw new IllegalStateException("Unable to create snapshot directory");
+        }
+
+        loadState();
     }
-    private void load() throws Exception {
-        identity = readObject(stateFile); memories = readArray(memoryFile); audit = readArray(auditFile);
-        if (identity == null) { identity = new JSONObject(); identity.put("id", UUID.randomUUID().toString()); identity.put("name", "CLOTUS"); identity.put("seed", UUID.randomUUID().toString()); identity.put("systemVersion", VERSION); identity.put("createdAt", now()); identity.put("status", "ACTIVE"); identity.put("protectedFields", new JSONArray(Arrays.asList("id","seed"))); state = new JSONObject(); state.put("mood", "observing"); state.put("goals", new JSONArray()); state.put("capabilities", new JSONObject()); atomicWrite(stateFile, identity); atomicWrite(new File(root,"runtime.json"), state); log("CORE", "IDENTITY_CREATED", "VERIFIED"); } else state = readObject(new File(root,"runtime.json"));
-        if (state == null) state = new JSONObject();
-        if (memories == null) memories = new JSONArray(); if (audit == null) audit = new JSONArray();
+
+    public synchronized JSONObject getIdentity() {
+        return identity;
     }
-    public synchronized JSONObject identity() { return identity; }
-    public synchronized JSONArray memories() { return memories; }
-    public synchronized JSONArray audit() { return audit; }
-    public synchronized void remember(String text, String source) throws Exception { JSONObject m = new JSONObject(); m.put("id", UUID.randomUUID().toString()); m.put("text", text); m.put("source", source); m.put("createdAt", now()); m.put("updatedAt", now()); memories.put(m); atomicWrite(memoryFile, memories); log("MEMORY", "CREATED", "VERIFIED"); }
-    public synchronized String respond(String input) throws Exception { if (input == null || input.trim().isEmpty()) return "No received input."; remember(input, "conversation"); String lower=input.toLowerCase(Locale.ROOT); String answer = lower.contains("hola") || lower.contains("hello") ? "Hola. Soy CLOTUS. Mi identidad y memoria están persistidas localmente." : lower.contains("quién") || lower.contains("quien") ? "Soy CLOTUS, una entidad local con estado auditable." : "He registrado tu mensaje en mi memoria. El procesamiento local está activo."; remember(answer, "core-response"); return answer; }
-    public synchronized String createSnapshot(String reason) throws Exception { if (!snapshotsDir.exists()) snapshotsDir.mkdirs(); String id = "snapshot-" + System.currentTimeMillis(); JSONObject snap = new JSONObject(); snap.put("identity", new JSONObject(identity.toString())); snap.put("state", new JSONObject(state.toString())); snap.put("memories", new JSONArray(memories.toString())); snap.put("reason", reason); snap.put("createdAt", now()); atomicWrite(new File(snapshotsDir, id+".json"), snap); log("EVOLUTION", "SNAPSHOT_CREATED", "VERIFIED"); return id; }
-    public synchronized boolean rollback(String id) throws Exception { File f=new File(snapshotsDir,id+".json"); JSONObject s=readObject(f); if(s==null) return false; identity=s.getJSONObject("identity"); state=s.getJSONObject("state"); memories=s.getJSONArray("memories"); persist(); log("EVOLUTION", "ROLLBACK_"+id, "VERIFIED"); return true; }
-    public synchronized JSONObject capabilities(Context c) { JSONObject x=new JSONObject(); try { x.put("LOCAL_CORE", "VERIFIED"); x.put("IDENTITY_PERSISTENCE", stateFile.exists()?"VERIFIED":"FAILED"); x.put("MEMORY_PERSISTENCE", memoryFile.exists()?"VERIFIED":"FAILED"); x.put("CAMERA", "NOT_VERIFIED"); x.put("MICROPHONE", "NOT_VERIFIED"); x.put("STT", "NOT_VERIFIED"); x.put("TTS", "AVAILABLE"); x.put("NETWORK", "NOT_VERIFIED"); x.put("BACKGROUND", "UNAVAILABLE"); } catch(Exception ignored){} return x; }
-    public synchronized void persist() throws Exception { atomicWrite(stateFile, identity); atomicWrite(new File(root,"runtime.json"),state); atomicWrite(memoryFile,memories); atomicWrite(auditFile,audit); }
-    private void log(String module,String event,String result) throws Exception { JSONObject e=new JSONObject(); e.put("timestamp",now()); e.put("module",module); e.put("event",event); e.put("result",result); e.put("version",VERSION); e.put("operationId",UUID.randomUUID().toString()); audit.put(e); atomicWrite(auditFile,audit); }
-    private static String now(){return new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZ",Locale.US).format(new Date());}
-    private static JSONObject readObject(File f)throws Exception{if(!f.exists())return null;return new JSONObject(read(f));}
-    private static JSONArray readArray(File f)throws Exception{if(!f.exists())return null;return new JSONArray(read(f));}
-    private static String read(File f)throws Exception{return new String(java.nio.file.Files.readAllBytes(f.toPath()),StandardCharsets.UTF_8);}
-    private static void atomicWrite(File f,Object value)throws Exception{File tmp=new File(f.getPath()+".tmp");try(FileOutputStream o=new FileOutputStream(tmp)){o.write(value.toString().getBytes(StandardCharsets.UTF_8));o.getFD().sync();}if(f.exists()&&!f.delete())throw new IOException("Cannot replace state");if(!tmp.renameTo(f))throw new IOException("Cannot commit state");}
+
+    public synchronized JSONObject getRuntimeState() {
+        return runtimeState;
+    }
+
+    public synchronized JSONArray getMemory() {
+        return memory;
+    }
+
+    public synchronized JSONArray getAudit() {
+        return audit;
+    }
+
+    public synchronized JSONObject getCapabilities() {
+        JSONObject capabilities = new JSONObject();
+        capabilities.put("CORE_RUNTIME", "VERIFIED");
+        capabilities.put("IDENTITY_PERSISTENCE", identityFile.exists() ? "VERIFIED" : "FAILED");
+        capabilities.put("MEMORY_PERSISTENCE", memoryFile.exists() ? "VERIFIED" : "FAILED");
+        capabilities.put("RUNTIME_PERSISTENCE", runtimeFile.exists() ? "VERIFIED" : "FAILED");
+        capabilities.put("SNAPSHOT_SUPPORT", snapshotDir.exists() ? "VERIFIED" : "FAILED");
+        capabilities.put("CAMERA", "NOT_VERIFIED");
+        capabilities.put("MICROPHONE", "NOT_VERIFIED");
+        capabilities.put("STT", "NOT_VERIFIED");
+        capabilities.put("TTS", "NOT_VERIFIED");
+        capabilities.put("NETWORK", "NOT_VERIFIED");
+        capabilities.put("BACKGROUND", "UNAVAILABLE");
+        capabilities.put("DEVICE_STORAGE", "VERIFIED");
+        return capabilities;
+    }
+
+    public synchronized String handleMessage(String value) throws Exception {
+        if (value == null || value.trim().isEmpty()) {
+            return "No input received.";
+        }
+
+        String trimmed = value.trim();
+        remember(trimmed, "user_message");
+
+        String lower = trimmed.toLowerCase(Locale.ROOT);
+        String response;
+        if (lower.contains("hola") || lower.contains("hello")) {
+            response = "Hola. Soy CLOTUS y mi identidad y memoria están persistidas localmente.";
+        } else if (lower.contains("estado") || lower.contains("status")) {
+            response = "Mi estado está cargado. La identidad, la memoria y los snapshots están activos.";
+        } else if (lower.contains("memoria") || lower.contains("memory")) {
+            response = "He registrado tu mensaje en la memoria local de CLOTUS.";
+        } else {
+            response = "He procesado tu mensaje y lo he registrado en el núcleo funcional de CLOTUS.";
+        }
+
+        remember(response, "clotus_response");
+        logEvent("conversation", "message_processed", "VERIFIED");
+        persist();
+        return response;
+    }
+
+    public synchronized String createSnapshot(String reason) throws Exception {
+        String snapshotId = "snapshot-" + System.currentTimeMillis();
+        File snapshotFile = new File(snapshotDir, snapshotId + ".json");
+
+        JSONObject snapshot = new JSONObject();
+        snapshot.put("snapshotId", snapshotId);
+        snapshot.put("reason", reason != null ? reason : "unspecified");
+        snapshot.put("createdAt", now());
+        snapshot.put("identity", new JSONObject(identity.toString()));
+        snapshot.put("runtimeState", new JSONObject(runtimeState.toString()));
+        snapshot.put("memory", new JSONArray(memory.toString()));
+
+        atomicWrite(snapshotFile, snapshot);
+        logEvent("evolution", "snapshot_created", "VERIFIED");
+        return snapshotId;
+    }
+
+    public synchronized boolean rollbackSnapshot(String snapshotId) throws Exception {
+        File snapshotFile = new File(snapshotDir, snapshotId + ".json");
+        if (!snapshotFile.exists()) {
+            return false;
+        }
+
+        JSONObject snapshot = readJsonObject(snapshotFile);
+        if (snapshot == null) {
+            return false;
+        }
+
+        identity = snapshot.getJSONObject("identity");
+        runtimeState = snapshot.getJSONObject("runtimeState");
+        memory = snapshot.getJSONArray("memory");
+
+        persist();
+        logEvent("evolution", "snapshot_restored", "VERIFIED");
+        return true;
+    }
+
+    public synchronized void remember(String text, String source) throws Exception {
+        JSONObject item = new JSONObject();
+        item.put("id", UUID.randomUUID().toString());
+        item.put("text", text);
+        item.put("source", source);
+        item.put("createdAt", now());
+        memory.put(item);
+        persist();
+    }
+
+    public synchronized void persist() throws Exception {
+        atomicWrite(identityFile, identity);
+        atomicWrite(runtimeFile, runtimeState);
+        atomicWrite(memoryFile, memory);
+        atomicWrite(auditFile, audit);
+    }
+
+    private void loadState() throws Exception {
+        identity = readJsonObject(identityFile);
+        runtimeState = readJsonObject(runtimeFile);
+        memory = readJsonArray(memoryFile);
+        audit = readJsonArray(auditFile);
+
+        boolean created = false;
+        if (identity == null) {
+            identity = new JSONObject();
+            identity.put("id", UUID.randomUUID().toString());
+            identity.put("name", "CLOTUS");
+            identity.put("seed", UUID.randomUUID().toString());
+            identity.put("systemVersion", VERSION);
+            identity.put("status", "ACTIVE");
+            identity.put("createdAt", now());
+            identity.put("protectedFields", new JSONArray().put("id").put("seed").put("systemVersion"));
+            created = true;
+        }
+
+        if (runtimeState == null) {
+            runtimeState = new JSONObject();
+            runtimeState.put("appState", "READY");
+            runtimeState.put("mood", "observing");
+            runtimeState.put("autonomy", "ACTIVE_WHILE_APP_IS_RUNNING");
+            runtimeState.put("memoryLoaded", true);
+            runtimeState.put("identityLoaded", true);
+        }
+
+        if (memory == null) {
+            memory = new JSONArray();
+        }
+
+        if (audit == null) {
+            audit = new JSONArray();
+        }
+
+        if (created) {
+            logEvent("identity", "created", "VERIFIED");
+        } else {
+            logEvent("identity", "loaded", "VERIFIED");
+        }
+
+        persist();
+    }
+
+    private void logEvent(String module, String event, String result) throws Exception {
+        JSONObject entry = new JSONObject();
+        entry.put("timestamp", now());
+        entry.put("module", module);
+        entry.put("event", event);
+        entry.put("result", result);
+        entry.put("version", VERSION);
+        audit.put(entry);
+    }
+
+    private static String now() {
+        return new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZ", Locale.US).format(new Date());
+    }
+
+    private static JSONObject readJsonObject(File file) throws Exception {
+        if (!file.exists() || file.length() == 0) {
+            return null;
+        }
+        String content = new String(java.nio.file.Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+        if (content.trim().isEmpty()) {
+            return null;
+        }
+        return new JSONObject(content);
+    }
+
+    private static JSONArray readJsonArray(File file) throws Exception {
+        if (!file.exists() || file.length() == 0) {
+            return null;
+        }
+        String content = new String(java.nio.file.Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+        if (content.trim().isEmpty()) {
+            return null;
+        }
+        return new JSONArray(content);
+    }
+
+    private static void atomicWrite(File file, Object value) throws Exception {
+        File temp = new File(file.getAbsolutePath() + ".tmp");
+        try (FileOutputStream out = new FileOutputStream(temp)) {
+            out.write(value.toString().getBytes(StandardCharsets.UTF_8));
+            out.getFD().sync();
+        }
+
+        if (file.exists() && !file.delete()) {
+            throw new IllegalStateException("Unable to replace existing file: " + file.getAbsolutePath());
+        }
+
+        if (!temp.renameTo(file)) {
+            throw new IllegalStateException("Unable to commit file: " + file.getAbsolutePath());
+        }
+    }
 }

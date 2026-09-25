@@ -1,16 +1,28 @@
 # CLOTUS
 
-Functional Android entity runtime, created as a new project because the source repository contained no CLOTUS implementation.
+A functional Android app shell for a persistent CLOTUS runtime with identity, memory, audit, snapshots and rollback in app-private storage.
 
-## Build
+## Project status
 
-```bash
-gradle :app:assembleDebug
-cp app/build/outputs/apk/debug/app-debug.apk dist/android/CLOTUS-debug.apk
-```
+This repository did not contain a prior CLOTUS implementation, so the app was created as a new Android module centered on the identity and storage model described in the requirements.
 
-The debug application id is `com.clotus.entity.debug`; the release application id is `com.clotus.entity`. Version `1.0.0`, code `1`.
+## Android package
 
-The core persists identity, seed, runtime state, memory and structured audit records under the app-private Android files directory. Writes use a temporary file, fsync and rename. Conversation is connected to the core, not hardcoded UI-only responses. Snapshots are real JSON copies and are ready for rollback through the core API.
+- Application ID: `com.clotus.entity`
+- Debug variant: `com.clotus.entity.debug`
+- Version: `1.0.0`
+- Version code: `1`
 
-Camera, microphone, STT, network and background autonomy are explicitly reported as NOT_VERIFIED/UNAVAILABLE until exercised on a real Android device. TTS is only marked AVAILABLE when the Android service exists; real device verification is still required.
+## Core behavior
+
+- Persistent identity generation
+- Seed-like runtime identity value
+- Memory journal persisted to device storage
+- Structured audit log
+- Snapshot and rollback support
+- App lifecycle persistence
+- Protected identity fields remain consistent
+
+## Important caveat
+
+The environment available to this session does not expose an Android build toolchain or an Android device/emulator, so no real APK was generated here. The project is prepared for Android compilation, but the actual APK must be built in an environment with the Android SDK installed.
